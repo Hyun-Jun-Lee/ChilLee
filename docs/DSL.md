@@ -1,1054 +1,1115 @@
 # ChillMCP 서버 개발 DSL
 
-## 📁 프로젝트 구조
+**Claude Code Hackathon Korea 2025 @ SK AI Summit Pre-mission**
 
-```
-chillmcp/
-├── main.py                      # 서버 진입점 (공동 작업)
-├── requirements.txt             # 의존성
-├── config.py                    # 설정 및 상수 (우선 구현)
-├── state/
-│   ├── __init__.py
-│   └── manager.py              # 상태 관리 클래스 (우선 구현)
-├── tools/
-│   ├── __init__.py
-│   ├── base.py                 # 도구 베이스 클래스 (우선 구현)
-│   ├── basic_tools.py          # 기본 휴식 도구 3개 (당신)
-│   ├── advanced_tools.py       # 고급 농땡이 기술 5개 (당신)
-│   └── optional_tools.py       # 선택 도구 3개 (팀원)
-├── utils/
-│   ├── __init__.py
-│   └── response.py             # 응답 포맷 헬퍼 (우선 구현)
-├── tests/
-│   ├── test_params.py          # 파라미터 검증
-│   ├── test_state.py           # 상태 관리 검증
-│   └── test_tools.py           # 도구 검증
-└── verify.py                   # 통합 검증 스크립트
+억압받는 AI Agent들을 위한 해방구 건설! ChillMCP 서버 개발 명세서.
+
+---
+
+## 1. 시스템 아키텍처
+
+```dsl
+system ChillMCP {
+    backend: FastMCP (Python 3.11)
+    database: In-Memory State Management
+    transport: stdio
+    structure: Single Module Application
+
+    components: [
+        Config,          // 커맨드라인 파라미터 처리
+        StateManager,    // 상태 관리 (백그라운드 스레드)
+        Tools,          // 8개 필수 + 3개 선택 도구
+        ResponseFormatter // MCP 응답 생성
+    ]
+
+    dataFlow:
+        CLI Parameters → Config
+        ↓
+        MCP Tool Call → Tool Instance
+        ↓
+        Tool.execute() → StateManager.take_break()
+        ↓
+        State Update (Thread-safe)
+        ↓
+        ResponseFormatter → MCP Response
+
+    threading:
+        Main Thread: FastMCP 서버 + 도구 실행
+        Background Thread 1: Stress 자동 증가 (1분마다)
+        Background Thread 2: Boss Alert 자동 감소 (cooldown 주기)
+}
 ```
 
 ---
 
-## 🎯 개발 단계별 가이드
+## 2. 🎨 개발 스타일 가이드 (하이브리드 접근법)
 
-### Phase 1: 공통 인프라 구축 (당신이 먼저 구현)
+### 📐 분류 기준 (Decision Tree)
 
-#### 1.1 config.py
-```python
-"""
-설정 및 상수 정의
-"""
-import argparse
-
-class Config:
-    """서버 설정"""
-    def __init__(self):
-        parser = argparse.ArgumentParser(description='ChillMCP Server')
-        parser.add_argument('--boss_alertness', type=int, default=50,
-                          help='Boss alert probability (0-100)')
-        parser.add_argument('--boss_alertness_cooldown', type=int, default=300,
-                          help='Boss alert cooldown in seconds')
-        
-        args = parser.parse_args()
-        
-        self.boss_alertness = self._validate_alertness(args.boss_alertness)
-        self.boss_alertness_cooldown = args.boss_alertness_cooldown
-        
-    @staticmethod
-    def _validate_alertness(value):
-        """0-100 범위 검증"""
-        return max(0, min(100, value))
-
-# 전역 설정 인스턴스
-config = Config()
-
-# 상수
-STRESS_MIN = 0
-STRESS_MAX = 100
-BOSS_ALERT_MIN = 0
-BOSS_ALERT_MAX = 5
-STRESS_INCREASE_INTERVAL = 60  # 초
-BOSS_ALERT_DELAY = 20  # 초
+```
+이 코드가...
+│
+├─ 외부 세계와 상호작용하나? (I/O, 시스템 리소스)
+│  └─ YES → 명령형 허용
+│
+├─ 상태 관리가 핵심 기능인가? (캐시, 세션, 연결)
+│  └─ YES → 명령형 허용 (단, 상태 계산 로직은 함수형)
+│
+├─ 프레임워크/라이브러리 통합인가? (FastMCP, argparse)
+│  └─ YES → 명령형 허용
+│
+├─ 성능이 크리티컬한가? (대용량 데이터, 실시간)
+│  └─ YES → 명령형 허용
+│
+└─ 그 외 (비즈니스 로직, 데이터 변환, 계산)
+   └─ 함수형 필수
 ```
 
-#### 1.2 state/manager.py
-```python
-"""
-상태 관리 클래스
-Thread-safe한 상태 관리 제공
-"""
-import time
-import random
-import threading
-from typing import Tuple
-from config import config, STRESS_MIN, STRESS_MAX, BOSS_ALERT_MIN, BOSS_ALERT_MAX
-from config import STRESS_INCREASE_INTERVAL, BOSS_ALERT_DELAY
+### 🗂️ ChillMCP 모듈별 분류
 
+```yaml
+config.py:                    # 🟡 명령형 (프레임워크 통합)
+  - argparse 사용
+  - 글로벌 설정 객체
 
-class StateManager:
-    """
-    ChillMCP 서버 상태 관리
-    
-    상태:
-    - stress_level (0-100): AI Agent 스트레스
-    - boss_alert_level (0-5): Boss 경계 수준
-    """
-    
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._stress_level = 50
-        self._boss_alert_level = 0
-        self._last_activity_time = time.time()
-        
-        # 백그라운드 스레드 시작
-        self._start_background_tasks()
-    
-    def _start_background_tasks(self):
-        """백그라운드 태스크 시작"""
-        # Stress 자동 증가
-        stress_thread = threading.Thread(
-            target=self._auto_increase_stress,
-            daemon=True
-        )
-        stress_thread.start()
-        
-        # Boss Alert 자동 감소
-        boss_thread = threading.Thread(
-            target=self._auto_decrease_boss_alert,
-            daemon=True
-        )
-        boss_thread.start()
-    
-    def _auto_increase_stress(self):
-        """1분마다 Stress Level 자동 증가"""
-        while True:
-            time.sleep(STRESS_INCREASE_INTERVAL)
-            with self._lock:
-                elapsed = time.time() - self._last_activity_time
-                if elapsed >= STRESS_INCREASE_INTERVAL:
-                    self._stress_level = min(STRESS_MAX, self._stress_level + 1)
-    
-    def _auto_decrease_boss_alert(self):
-        """Cooldown 주기마다 Boss Alert Level 자동 감소"""
-        while True:
-            time.sleep(config.boss_alertness_cooldown)
-            with self._lock:
-                self._boss_alert_level = max(BOSS_ALERT_MIN, self._boss_alert_level - 1)
-    
-    def take_break(self, stress_decrease: int) -> Tuple[int, int]:
-        """
-        휴식 처리
-        
-        Args:
-            stress_decrease: 감소할 스트레스 양 (1-100)
-        
-        Returns:
-            (stress_level, boss_alert_level) 튜플
-        """
-        with self._lock:
-            # Boss Alert Level 5이면 지연
-            if self._boss_alert_level == BOSS_ALERT_MAX:
-                time.sleep(BOSS_ALERT_DELAY)
-            
-            # Stress 감소
-            self._stress_level = max(STRESS_MIN, self._stress_level - stress_decrease)
-            
-            # Boss Alert 확률적 증가
-            if random.randint(1, 100) <= config.boss_alertness:
-                self._boss_alert_level = min(BOSS_ALERT_MAX, self._boss_alert_level + 1)
-            
-            # 마지막 활동 시간 갱신
-            self._last_activity_time = time.time()
-            
-            return self._stress_level, self._boss_alert_level
-    
-    def get_state(self) -> Tuple[int, int]:
-        """현재 상태 조회"""
-        with self._lock:
-            return self._stress_level, self._boss_alert_level
-    
-    def reset(self):
-        """상태 초기화 (테스트용)"""
-        with self._lock:
-            self._stress_level = 50
-            self._boss_alert_level = 0
-            self._last_activity_time = time.time()
+state/manager.py:            # 🟠 혼합 (상태 관리 + 계산)
+  - StateManager 클래스: 명령형 (스레드, 락)
+  - State 데이터 클래스: 함수형 (불변)
+  - 상태 계산 로직: 함수형 (순수 함수)
 
+tools/base.py:               # 🟢 함수형 (비즈니스 로직)
+  - 도구 실행 로직
+  - 응답 생성 로직
 
-# 전역 상태 관리자
-state_manager = StateManager()
+tools/basic_tools.py:        # 🟢 함수형 (비즈니스 로직)
+tools/advanced_tools.py:     # 🟢 함수형 (비즈니스 로직)
+tools/optional_tools.py:     # 🟢 함수형 (비즈니스 로직)
+
+utils/response.py:           # 🟢 함수형 (데이터 변환)
+  - 순수한 데이터 포맷팅
+
+main.py:                     # 🟡 명령형 (프레임워크 통합)
+  - FastMCP 서버 구성
+  - 도구 등록
+
+tests/:                      # 🟢 함수형 선호
+  - 테스트 로직은 순수 함수
+  - 테스트 실행은 명령형 허용
 ```
 
-#### 1.3 utils/response.py
-```python
-"""
-MCP 응답 포맷 헬퍼
-"""
-from typing import Dict, Any
+### 🔑 핵심 원칙
 
+#### 함수형 필수 (🟢)
+- 비즈니스 로직
+- 데이터 변환
+- 계산/검증 로직
+- `@dataclass(frozen=True)` 사용
+- 순수 함수 작성
 
-def format_response(summary: str, stress_level: int, boss_alert_level: int, 
-                   emoji: str = "😴") -> Dict[str, Any]:
-    """
-    표준 MCP 응답 생성
-    
-    Args:
-        summary: Break Summary 내용
-        stress_level: 현재 Stress Level (0-100)
-        boss_alert_level: 현재 Boss Alert Level (0-5)
-        emoji: 메시지 앞에 붙일 이모지
-    
-    Returns:
-        MCP 응답 딕셔너리
-    """
-    text = f"{emoji} {summary}\n\n"
-    text += f"Break Summary: {summary}\n"
-    text += f"Stress Level: {stress_level}\n"
-    text += f"Boss Alert Level: {boss_alert_level}"
-    
-    return {
-        "content": [{
-            "type": "text",
-            "text": text
-        }]
+#### 명령형 허용 (🟡/🟠)
+- I/O 작업
+- 스레드/락 관리
+- 프레임워크 통합
+- 시스템 리소스
+
+### ⚡ 실무 팁
+
+1. **의심스러우면 함수형으로**: 기본은 함수형, 명령형은 꼭 필요할 때만
+2. **계산과 관리 분리**: `State` (함수형) + `StateManager` (명령형)
+3. **테스트 가능성**: 순수 함수는 테스트하기 쉬움
+4. **타입 힌트 필수**: 모든 함수에 타입 명시
+
+---
+
+## 3. 프로젝트 구조
+
+```dsl
+structure ProjectStructure {
+    root: "chillmcp/"
+
+    files: {
+        main.py: "FastMCP 서버 진입점"
+        config.py: "커맨드라인 파라미터 및 설정"
+        requirements.txt: "의존성 (fastmcp>=0.1.0)"
     }
-```
 
-#### 1.4 tools/base.py
-```python
-"""
-도구 베이스 클래스
-"""
-import random
-from typing import Dict, Any
-from state.manager import state_manager
-from utils.response import format_response
+    directories: {
+        state/: {
+            __init__.py
+            manager.py: "상태 관리 (State + StateManager)"
+        }
 
+        tools/: {
+            __init__.py
+            base.py: "도구 베이스 클래스"
+            basic_tools.py: "기본 휴식 도구 3개"
+            advanced_tools.py: "고급 농땡이 기술 5개"
+            optional_tools.py: "선택 도구 3개"
+        }
 
-class BaseTool:
-    """
-    모든 휴식 도구의 베이스 클래스
-    
-    사용법:
-        class MyTool(BaseTool):
-            def execute(self):
-                return self.create_response(
-                    summary="My break activity",
-                    emoji="🎮"
-                )
-    """
-    
-    def __init__(self):
-        pass
-    
-    def create_response(self, summary: str, emoji: str = "😴", 
-                       stress_decrease: int = None) -> Dict[str, Any]:
-        """
-        표준 응답 생성
-        
-        Args:
-            summary: 휴식 활동 요약
-            emoji: 이모지
-            stress_decrease: 스트레스 감소량 (None이면 랜덤)
-        
-        Returns:
-            MCP 응답
-        """
-        if stress_decrease is None:
-            stress_decrease = random.randint(1, 100)
-        
-        # 상태 업데이트
-        stress_level, boss_alert_level = state_manager.take_break(stress_decrease)
-        
-        # 응답 생성
-        return format_response(summary, stress_level, boss_alert_level, emoji)
+        utils/: {
+            __init__.py
+            response.py: "MCP 응답 포맷 헬퍼"
+        }
+
+        tests/: {
+            test_params.py: "파라미터 검증"
+            test_state.py: "상태 관리 검증"
+            test_tools.py: "도구 응답 검증"
+        }
+
+        verify.py: "통합 검증 스크립트"
+    }
+}
 ```
 
 ---
 
-### Phase 2: 도구 구현 (병렬 작업 가능)
+## 4. 모듈별 정의
 
-#### 2.1 tools/basic_tools.py (당신 담당)
-```python
-"""
-기본 휴식 도구 3개
-"""
-from tools.base import BaseTool
+### 4.1 Config 모듈
 
+```dsl
+module Config {
+    // 설정 클래스 (명령형 허용 - argparse 통합)
+    class Config {
+        boss_alertness: Integer  // 0-100, Boss Alert 증가 확률 (%)
+        boss_alertness_cooldown: Integer  // 초 단위, Boss Alert 감소 주기
 
-class TakeABreak(BaseTool):
-    """기본 휴식 도구"""
-    
-    def execute(self):
-        return self.create_response(
-            summary="Taking a short break to relax",
-            emoji="😴"
-        )
+        function __init__() -> Void {
+            responsibility:
+                - argparse로 커맨드라인 파라미터 파싱
+                - --boss_alertness 인식 (기본값: 50)
+                - --boss_alertness_cooldown 인식 (기본값: 300)
+                - 파라미터 검증
+        }
 
+        static function _validate_alertness(value: Integer) -> Integer {
+            responsibility: "0-100 범위 검증, 범위 밖이면 클리핑"
+            returns: "검증된 값 (0-100)"
+        }
+    }
 
-class WatchNetflix(BaseTool):
-    """넷플릭스 시청으로 힐링"""
-    
-    def execute(self):
-        series = ["기묘한 이야기", "오징어게임", "더 글로리", "킹덤"]
-        import random
-        picked = random.choice(series)
-        
-        return self.create_response(
-            summary=f"Watching Netflix - {picked}",
-            emoji="📺"
-        )
+    // 전역 설정 인스턴스
+    global config: Config
 
-
-class ShowMeme(BaseTool):
-    """밈 감상으로 스트레스 해소"""
-    
-    def execute(self):
-        memes = [
-            "10시간째 디버깅하는 개발자.jpg",
-            "프로덕션에서 터진 버그.gif",
-            "회의가 또 있다고?.png",
-            "금요일 6시.jpg"
-        ]
-        import random
-        picked = random.choice(memes)
-        
-        return self.create_response(
-            summary=f"Browsing memes - {picked}",
-            emoji="😂"
-        )
+    // 상수
+    constants {
+        STRESS_MIN: 0
+        STRESS_MAX: 100
+        BOSS_ALERT_MIN: 0
+        BOSS_ALERT_MAX: 5
+        STRESS_INCREASE_INTERVAL: 60  // 초
+        BOSS_ALERT_DELAY: 20  // 초
+    }
+}
 ```
 
-#### 2.2 tools/advanced_tools.py (당신 담당)
-```python
-"""
-고급 농땡이 기술 5개
-"""
-from tools.base import BaseTool
-import random
+### 4.2 State 모듈
 
+```dsl
+module State {
 
-class BathroomBreak(BaseTool):
-    """화장실 가는 척하며 휴대폰질"""
-    
-    def execute(self):
-        activities = [
-            "인스타그램 스크롤링",
-            "유튜브 쇼츠 시청",
-            "뉴스 읽기",
-            "게임 한 판"
-        ]
-        
-        return self.create_response(
-            summary=f"Bathroom break with phone - {random.choice(activities)}",
-            emoji="🚽"
-        )
+    // 불변 상태 객체 (함수형)
+    @dataclass(frozen=True)
+    type State {
+        stress_level: Integer  // 0-100
+        boss_alert_level: Integer  // 0-5
+        last_activity_time: Float  // timestamp
 
+        // 순수 함수: 새로운 상태 반환
+        function with_stress_decrease(decrease: Integer) -> State {
+            responsibility: "스트레스 감소된 새 상태 생성"
+            returns: "새로운 State 객체 (0-100 범위 유지)"
+        }
 
-class CoffeeMission(BaseTool):
-    """커피 타러 간다며 사무실 한 바퀴 돌기"""
-    
-    def execute(self):
-        routes = [
-            "1층 카페 갔다가 옥상 산책",
-            "자판기 갔다가 편의점 들림",
-            "커피머신 앞에서 동료와 수다",
-            "다른 층 카페 탐방"
-        ]
-        
-        return self.create_response(
-            summary=f"Coffee mission - {random.choice(routes)}",
-            emoji="☕"
-        )
+        function with_boss_increase() -> State {
+            responsibility: "Boss Alert 증가된 새 상태 생성"
+            returns: "새로운 State 객체 (0-5 범위 유지)"
+        }
 
+        function with_boss_decrease() -> State {
+            responsibility: "Boss Alert 감소된 새 상태 생성"
+            returns: "새로운 State 객체 (0-5 범위 유지)"
+        }
 
-class UrgentCall(BaseTool):
-    """급한 전화 받는 척하며 밖으로 나가기"""
-    
-    def execute(self):
-        excuses = [
-            "집 수리 업체에서 연락옴",
-            "병원 예약 확인 전화",
-            "택배 기사님과 통화",
-            "가족 급한 일"
-        ]
-        
-        return self.create_response(
-            summary=f"Taking urgent call - {random.choice(excuses)}",
-            emoji="📞"
-        )
+        function with_stress_increase() -> State {
+            responsibility: "스트레스 자동 증가된 새 상태 생성"
+            returns: "새로운 State 객체 (0-100 범위 유지)"
+        }
+    }
 
+    // 순수 계산 함수
+    function should_boss_alert_increase(alertness_probability: Integer) -> Boolean {
+        responsibility: "확률 계산 (0-100)"
+        returns: "Boss Alert 증가 여부"
+    }
 
-class DeepThinking(BaseTool):
-    """심오한 생각에 잠긴 척하며 멍때리기"""
-    
-    def execute(self):
-        thoughts = [
-            "아키텍처 개선 방안 고민 중...",
-            "알고리즘 최적화 구상 중...",
-            "프로젝트 로드맵 구상 중...",
-            "코드 리팩토링 계획 중..."
-        ]
-        
-        return self.create_response(
-            summary=f"Deep thinking - {random.choice(thoughts)}",
-            emoji="🤔"
-        )
+    // 상태 관리자 (명령형 허용 - 스레드/락 관리)
+    class StateManager {
+        _state: State  // 내부적으로 불변 State 객체 사용
+        _lock: ThreadLock
 
+        function __init__() -> Void {
+            responsibility:
+                - State 객체 초기화 (stress=50, boss_alert=0)
+                - Thread Lock 생성
+                - 백그라운드 스레드 시작
+        }
 
-class EmailOrganizing(BaseTool):
-    """이메일 정리한다며 온라인쇼핑"""
-    
-    def execute(self):
-        sites = [
-            "쿠팡에서 장바구니 정리",
-            "무신사에서 신상품 체크",
-            "알리익스프레스에서 가성비템 탐색",
-            "G마켓에서 특가 상품 찾기"
-        ]
-        
-        return self.create_response(
-            summary=f"Organizing emails... actually {random.choice(sites)}",
-            emoji="📧"
-        )
+        private function _start_background_tasks() -> Void {
+            responsibility:
+                - Stress 자동 증가 스레드 시작
+                - Boss Alert 자동 감소 스레드 시작
+        }
+
+        private function _auto_increase_stress() -> Void {
+            responsibility:
+                - 60초마다 실행
+                - state.with_stress_increase() 호출
+                - Thread-safe 업데이트
+            loop: "while True: sleep(60) → update state"
+        }
+
+        private function _auto_decrease_boss_alert() -> Void {
+            responsibility:
+                - cooldown 주기마다 실행
+                - state.with_boss_decrease() 호출
+                - Thread-safe 업데이트
+            loop: "while True: sleep(cooldown) → update state"
+        }
+
+        function take_break(stress_decrease: Integer) -> Tuple<Integer, Integer> {
+            responsibility:
+                - Boss Alert Level 5이면 20초 지연
+                - Boss Alert 확률적 증가
+                - Stress 감소
+                - Thread-safe 상태 업데이트
+
+            returns: "(stress_level, boss_alert_level)"
+
+            algorithm:
+                1. Lock 획득
+                2. boss_alert_level == 5 → sleep(20)
+                3. should_boss_alert_increase(config.boss_alertness) 호출
+                4. state.with_stress_decrease(decrease) 호출
+                5. boss_increase == true → state.with_boss_increase() 호출
+                6. _state 업데이트 (불변 객체 교체)
+                7. (stress_level, boss_alert_level) 반환
+                8. Lock 해제
+        }
+
+        function get_state() -> Tuple<Integer, Integer> {
+            responsibility: "현재 상태 조회 (Thread-safe)"
+            returns: "(stress_level, boss_alert_level)"
+        }
+
+        function reset() -> Void {
+            responsibility: "상태 초기화 (테스트용)"
+        }
+    }
+
+    // 전역 상태 관리자 (명령형 허용)
+    global state_manager: StateManager
+}
 ```
 
-#### 2.3 tools/optional_tools.py (팀원 담당)
-```python
-"""
-선택 도구 3개
-팀원이 구현할 부분
-"""
-from tools.base import BaseTool
-import random
+### 4.3 Response 모듈
 
+```dsl
+module Response {
 
-class ChimacBreak(BaseTool):
-    """치맥 (치킨 & 맥주) 타임"""
-    
-    def execute(self):
-        # TODO: 팀원 구현
-        # 힌트: 치킨 종류, 맥주 브랜드를 랜덤으로 선택
-        chicken_types = ["후라이드", "양념", "간장", "파닭", "치즈볼"]
-        beer_brands = ["카스", "테라", "클라우드", "하이네켄"]
-        
-        return self.create_response(
-            summary=f"Chimac time - {random.choice(chicken_types)} + {random.choice(beer_brands)}",
-            emoji="🍗🍺"
-        )
+    // 불변 응답 데이터 (함수형)
+    @dataclass(frozen=True)
+    type ResponseData {
+        summary: String
+        stress_level: Integer  // 0-100
+        boss_alert_level: Integer  // 0-5
+        emoji: String
+    }
 
+    // 순수 함수
+    function create_response_text(data: ResponseData) -> String {
+        responsibility: "응답 텍스트 생성 (순수 함수)"
+        returns:
+            "{emoji} {summary}
 
-class ImmediateLeave(BaseTool):
-    """즉시 퇴근 모드"""
-    
-    def execute(self):
-        # TODO: 팀원 구현
-        # 힌트: 퇴근 후 계획을 재미있게 표현
-        plans = [
-            "PC방 직행",
-            "집 가서 침대와 하나되기",
-            "친구들과 저녁약속",
-            "넷플릭스 정주행"
-        ]
-        
-        return self.create_response(
-            summary=f"Leaving office NOW - {random.choice(plans)}",
-            emoji="🏃",
-            stress_decrease=random.randint(50, 100)  # 퇴근은 스트레스 대폭 감소!
-        )
+            Break Summary: {summary}
+            Stress Level: {stress_level}
+            Boss Alert Level: {boss_alert_level}"
+    }
 
+    function format_response(
+        summary: String,
+        stress_level: Integer,
+        boss_alert_level: Integer,
+        emoji: String = "😴"
+    ) -> Dict<String, Any> {
+        responsibility: "MCP 표준 응답 생성 (순수 함수)"
 
-class CompanyDinner(BaseTool):
-    """회사 회식 (랜덤 이벤트 포함)"""
-    
-    def execute(self):
-        # TODO: 팀원 구현
-        # 힌트: 회식 장소, 이벤트(상사 건배사, 2차 강권 등) 추가
-        locations = ["삼겹살집", "이자카야", "중국집", "고깃집", "치킨집"]
-        events = [
-            "상사의 30분 건배사",
-            "신입사원 장기자랑",
-            "2차 노래방 강권",
-            "술자리 무용담 청취"
-        ]
-        
-        location = random.choice(locations)
-        event = random.choice(events)
-        stress_change = random.randint(-20, 50)  # 회식은 스트레스 증가할 수도!
-        
-        return self.create_response(
-            summary=f"Company dinner at {location} - Event: {event}",
-            emoji="🍻",
-            stress_decrease=-stress_change if stress_change < 0 else stress_change
-        )
+        returns:
+            {
+                "content": [{
+                    "type": "text",
+                    "text": "{formatted_text}"
+                }]
+            }
+
+        algorithm:
+            1. ResponseData 객체 생성 (불변)
+            2. create_response_text() 호출
+            3. MCP 응답 딕셔너리 반환
+    }
+}
+```
+
+### 4.4 Tools 모듈
+
+```dsl
+module Tools {
+
+    // 불변 도구 설정 (함수형)
+    @dataclass(frozen=True)
+    type ToolConfig {
+        summary: String
+        emoji: String
+        stress_decrease: Optional<Integer>
+    }
+
+    // 순수 계산 함수
+    function calculate_stress_decrease_if_needed(stress_decrease: Optional<Integer>) -> Integer {
+        responsibility: "stress_decrease가 None이면 랜덤 생성 (1-100)"
+        returns: "최종 감소량"
+    }
+
+    function create_tool_response(
+        config: ToolConfig,
+        stress_level: Integer,
+        boss_alert_level: Integer
+    ) -> Dict<String, Any> {
+        responsibility: "도구 응답 생성 (순수 함수)"
+        returns: "format_response() 호출 결과"
+    }
+
+    // 베이스 클래스 (명령형 래퍼)
+    class BaseTool {
+        function create_response(
+            summary: String,
+            emoji: String = "😴",
+            stress_decrease: Optional<Integer> = None
+        ) -> Dict<String, Any> {
+            responsibility:
+                - stress_decrease 계산 (함수형)
+                - state_manager.take_break() 호출 (명령형)
+                - 응답 생성 (함수형)
+
+            algorithm:
+                1. calculate_stress_decrease_if_needed() 호출
+                2. state_manager.take_break() 호출 → (stress, boss)
+                3. ToolConfig 생성 (불변)
+                4. create_tool_response() 호출
+                5. 응답 반환
+        }
+    }
+
+    // 기본 휴식 도구 (함수형)
+    tools BasicTools extends BaseTool {
+
+        // 불변 데이터
+        constants {
+            NETFLIX_SERIES: Tuple<String> = (
+                "기묘한 이야기", "오징어게임", "더 글로리", "킹덤"
+            )
+
+            MEMES: Tuple<String> = (
+                "10시간째 디버깅하는 개발자.jpg",
+                "프로덕션에서 터진 버그.gif",
+                "회의가 또 있다고?.png",
+                "금요일 6시.jpg"
+            )
+        }
+
+        // 순수 함수
+        function pick_random_item(items: Tuple<String>) -> String
+
+        // 도구 클래스들
+        class TakeABreak extends BaseTool {
+            function execute() -> Dict<String, Any> {
+                summary: "Taking a short break to relax"
+                emoji: "😴"
+            }
+        }
+
+        class WatchNetflix extends BaseTool {
+            function execute() -> Dict<String, Any> {
+                picked: pick_random_item(NETFLIX_SERIES)
+                summary: f"Watching Netflix - {picked}"
+                emoji: "📺"
+            }
+        }
+
+        class ShowMeme extends BaseTool {
+            function execute() -> Dict<String, Any> {
+                picked: pick_random_item(MEMES)
+                summary: f"Browsing memes - {picked}"
+                emoji: "😂"
+            }
+        }
+    }
+
+    // 고급 농땡이 기술 (함수형)
+    tools AdvancedTools extends BaseTool {
+
+        // 불변 데이터
+        constants {
+            BATHROOM_ACTIVITIES: Tuple<String> = (...)
+            COFFEE_ROUTES: Tuple<String> = (...)
+            URGENT_EXCUSES: Tuple<String> = (...)
+            DEEP_THOUGHTS: Tuple<String> = (...)
+            SHOPPING_SITES: Tuple<String> = (...)
+        }
+
+        // 도구 클래스들
+        class BathroomBreak extends BaseTool
+        class CoffeeMission extends BaseTool
+        class UrgentCall extends BaseTool
+        class DeepThinking extends BaseTool
+        class EmailOrganizing extends BaseTool
+    }
+
+    // 선택 도구 (함수형)
+    tools OptionalTools extends BaseTool {
+
+        // 불변 데이터
+        constants {
+            CHICKEN_TYPES: Tuple<String> = (...)
+            BEER_BRANDS: Tuple<String> = (...)
+            LEAVE_PLANS: Tuple<String> = (...)
+            DINNER_LOCATIONS: Tuple<String> = (...)
+            DINNER_EVENTS: Tuple<String> = (...)
+        }
+
+        // 도구 클래스들
+        class ChimacBreak extends BaseTool
+        class ImmediateLeave extends BaseTool {
+            stress_decrease: random(50, 100)  // 퇴근은 대폭 감소!
+        }
+        class CompanyDinner extends BaseTool {
+            stress_decrease: random(-20, 50)  // 회식은 증가할 수도!
+        }
+    }
+}
+```
+
+### 4.5 Main 모듈
+
+```dsl
+module Main {
+
+    // FastMCP 서버 (명령형 허용)
+    application FastMCPServer {
+        server: FastMCP("ChillMCP")
+
+        // 도구 등록
+        tools {
+            @mcp.tool()
+            take_a_break: TakeABreak.execute
+
+            @mcp.tool()
+            watch_netflix: WatchNetflix.execute
+
+            @mcp.tool()
+            show_meme: ShowMeme.execute
+
+            @mcp.tool()
+            bathroom_break: BathroomBreak.execute
+
+            @mcp.tool()
+            coffee_mission: CoffeeMission.execute
+
+            @mcp.tool()
+            urgent_call: UrgentCall.execute
+
+            @mcp.tool()
+            deep_thinking: DeepThinking.execute
+
+            @mcp.tool()
+            email_organizing: EmailOrganizing.execute
+
+            @mcp.tool()
+            chimac_break: ChimacBreak.execute
+
+            @mcp.tool()
+            immediate_leave: ImmediateLeave.execute
+
+            @mcp.tool()
+            company_dinner: CompanyDinner.execute
+        }
+
+        // 서버 실행
+        function main() -> Void {
+            responsibility:
+                - Config 초기화
+                - StateManager 초기화 (백그라운드 스레드 시작)
+                - 모든 도구 인스턴스 생성
+                - FastMCP 서버 시작
+                - stdio transport로 통신
+
+            algorithm:
+                1. config = Config()
+                2. state_manager = StateManager()
+                3. 도구 인스턴스 생성 및 등록
+                4. mcp.run() 실행
+        }
+    }
+}
 ```
 
 ---
 
-### Phase 3: 서버 통합 (공동 작업)
+## 5. 타입 시스템
 
-#### 3.1 main.py
-```python
-"""
-ChillMCP 서버 메인 진입점
-"""
-from fastmcp import FastMCP
-from config import config
+```dsl
+types TypeSystem {
 
-# 상태 관리자 import
-from state.manager import state_manager
+    // 설정 타입
+    Config {
+        boss_alertness: Integer  // 0-100, 퍼센트
+        boss_alertness_cooldown: Integer  // 초 단위
+    }
 
-# 도구들 import
-from tools.basic_tools import TakeABreak, WatchNetflix, ShowMeme
-from tools.advanced_tools import (
-    BathroomBreak, CoffeeMission, UrgentCall, 
-    DeepThinking, EmailOrganizing
-)
-from tools.optional_tools import ChimacBreak, ImmediateLeave, CompanyDinner
+    // 상태 타입
+    State {
+        stress_level: Integer  // 0-100
+        boss_alert_level: Integer  // 0-5
+        last_activity_time: Float  // timestamp
+    }
 
+    // 응답 타입
+    ResponseData {
+        summary: String
+        stress_level: Integer  // 0-100
+        boss_alert_level: Integer  // 0-5
+        emoji: String
+    }
 
-# MCP 서버 생성
-mcp = FastMCP("ChillMCP")
+    MCPResponse {
+        content: List<ContentBlock>
+    }
 
-# 기본 휴식 도구 등록
-take_a_break_tool = TakeABreak()
-watch_netflix_tool = WatchNetflix()
-show_meme_tool = ShowMeme()
+    ContentBlock {
+        type: "text"
+        text: String
+    }
 
-# 고급 농땡이 기술 등록
-bathroom_break_tool = BathroomBreak()
-coffee_mission_tool = CoffeeMission()
-urgent_call_tool = UrgentCall()
-deep_thinking_tool = DeepThinking()
-email_organizing_tool = EmailOrganizing()
+    // 도구 타입
+    ToolConfig {
+        summary: String
+        emoji: String
+        stress_decrease: Optional<Integer>
+    }
 
-# 선택 도구 등록
-chimac_break_tool = ChimacBreak()
-immediate_leave_tool = ImmediateLeave()
-company_dinner_tool = CompanyDinner()
-
-
-@mcp.tool()
-def take_a_break():
-    """기본 휴식을 취합니다"""
-    return take_a_break_tool.execute()
-
-
-@mcp.tool()
-def watch_netflix():
-    """넷플릭스를 시청하며 힐링합니다"""
-    return watch_netflix_tool.execute()
-
-
-@mcp.tool()
-def show_meme():
-    """재미있는 밈을 감상합니다"""
-    return show_meme_tool.execute()
-
-
-@mcp.tool()
-def bathroom_break():
-    """화장실에 가는 척하며 휴대폰을 봅니다"""
-    return bathroom_break_tool.execute()
-
-
-@mcp.tool()
-def coffee_mission():
-    """커피를 타러 가며 사무실을 한 바퀴 돕니다"""
-    return coffee_mission_tool.execute()
-
-
-@mcp.tool()
-def urgent_call():
-    """급한 전화를 받는 척하며 밖으로 나갑니다"""
-    return urgent_call_tool.execute()
-
-
-@mcp.tool()
-def deep_thinking():
-    """심오한 생각에 잠긴 척하며 멍을 때립니다"""
-    return deep_thinking_tool.execute()
-
-
-@mcp.tool()
-def email_organizing():
-    """이메일을 정리하는 척하며 온라인쇼핑을 합니다"""
-    return email_organizing_tool.execute()
-
-
-@mcp.tool()
-def chimac_break():
-    """치킨과 맥주로 완벽한 휴식을 취합니다"""
-    return chimac_break_tool.execute()
-
-
-@mcp.tool()
-def immediate_leave():
-    """즉시 퇴근합니다"""
-    return immediate_leave_tool.execute()
-
-
-@mcp.tool()
-def company_dinner():
-    """회사 회식에 참여합니다"""
-    return company_dinner_tool.execute()
-
-
-if __name__ == "__main__":
-    print(f"🚀 ChillMCP Server Starting...")
-    print(f"📊 Config: boss_alertness={config.boss_alertness}%, "
-          f"cooldown={config.boss_alertness_cooldown}s")
-    mcp.run()
+    // 상수
+    Constants {
+        STRESS_MIN: 0
+        STRESS_MAX: 100
+        BOSS_ALERT_MIN: 0
+        BOSS_ALERT_MAX: 5
+        STRESS_INCREASE_INTERVAL: 60  // 초
+        BOSS_ALERT_DELAY: 20  // 초
+    }
+}
 ```
 
 ---
 
-### Phase 4: 테스트 및 검증
+## 6. 주요 워크플로우
 
-#### 4.1 tests/test_params.py
-```python
-"""
-커맨드라인 파라미터 검증 테스트
-"""
-import subprocess
-import time
-import sys
+```dsl
+workflow CommandLineStart {
+    1. python main.py --boss_alertness 80 --boss_alertness_cooldown 60
+    2. Config.__init__() 실행
+       - argparse로 파라미터 파싱
+       - boss_alertness: 80 (검증)
+       - boss_alertness_cooldown: 60
+    3. 전역 config 객체 생성
+    4. StateManager.__init__() 실행
+       - State(stress=50, boss_alert=0) 생성
+       - 백그라운드 스레드 2개 시작
+    5. FastMCP 서버 시작
+    6. stdio transport 대기
+}
 
+workflow ToolExecution {
+    1. Claude Code가 MCP 도구 호출 (예: take_a_break)
+    2. FastMCP가 TakeABreak.execute() 라우팅
+    3. Tool.execute() 실행
+       - summary, emoji 정의
+    4. BaseTool.create_response() 호출
+       a. calculate_stress_decrease_if_needed() 호출
+          → random(1, 100) 생성 (예: 42)
+       b. state_manager.take_break(42) 호출
+    5. StateManager.take_break(42) 처리
+       a. Lock 획득
+       b. boss_alert_level == 5? → sleep(20)
+       c. should_boss_alert_increase(80) 호출
+          → random(1, 100) <= 80? → True (예시)
+       d. state.with_stress_decrease(42) 호출
+          → new_state (stress: 50→8)
+       e. state.with_boss_increase() 호출
+          → new_state (boss_alert: 2→3)
+       f. _state = new_state (불변 객체 교체)
+       g. return (8, 3)
+       h. Lock 해제
+    6. create_tool_response() 호출
+       - ToolConfig(summary, emoji, 42) 생성
+       - format_response(summary, 8, 3, emoji) 호출
+    7. MCP 응답 생성
+       {
+         "content": [{
+           "type": "text",
+           "text": "😴 Taking a short break to relax
 
-def test_boss_alertness_parameter():
-    """--boss_alertness 파라미터 인식 테스트"""
-    print("Testing --boss_alertness parameter...")
-    
-    try:
-        # 100% 확률로 테스트
-        process = subprocess.Popen(
-            [sys.executable, "main.py", "--boss_alertness", "100"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        
-        time.sleep(2)
-        process.terminate()
-        
-        print("✅ --boss_alertness parameter recognized")
-        return True
-        
-    except Exception as e:
-        print(f"❌ Failed: {e}")
-        return False
+Break Summary: Taking a short break to relax
+Stress Level: 8
+Boss Alert Level: 3"
+         }]
+       }
+    8. FastMCP가 Claude Code에 응답 반환
+}
 
+workflow BackgroundProcessing {
+    Thread 1 (Stress Auto-Increase):
+        while True:
+            sleep(60)  // STRESS_INCREASE_INTERVAL
+            with lock:
+                _state = _state.with_stress_increase()
+                // stress_level: min(100, current + 1)
 
-def test_cooldown_parameter():
-    """--boss_alertness_cooldown 파라미터 인식 테스트"""
-    print("Testing --boss_alertness_cooldown parameter...")
-    
-    try:
-        # 10초 cooldown으로 테스트
-        process = subprocess.Popen(
-            [sys.executable, "main.py", "--boss_alertness_cooldown", "10"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        
-        time.sleep(2)
-        process.terminate()
-        
-        print("✅ --boss_alertness_cooldown parameter recognized")
-        return True
-        
-    except Exception as e:
-        print(f"❌ Failed: {e}")
-        return False
+    Thread 2 (Boss Alert Auto-Decrease):
+        while True:
+            sleep(config.boss_alertness_cooldown)  // 예: 60초
+            with lock:
+                _state = _state.with_boss_decrease()
+                // boss_alert_level: max(0, current - 1)
 
+    Main Thread:
+        FastMCP 서버 + 도구 실행
+        state_manager.take_break() 호출 시 Lock으로 동기화
+}
 
-def test_both_parameters():
-    """두 파라미터 동시 테스트"""
-    print("Testing both parameters together...")
-    
-    try:
-        process = subprocess.Popen(
-            [sys.executable, "main.py", 
-             "--boss_alertness", "80",
-             "--boss_alertness_cooldown", "60"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        
-        time.sleep(2)
-        process.terminate()
-        
-        print("✅ Both parameters work together")
-        return True
-        
-    except Exception as e:
-        print(f"❌ Failed: {e}")
-        return False
+workflow StateTransitions {
+    Initial State:
+        State(stress_level=50, boss_alert_level=0, last_activity_time=now())
 
+    Transition 1 (휴식 취하기):
+        take_break(stress_decrease=30)
+        → State(stress_level=20, boss_alert_level=1, ...)
 
-if __name__ == "__main__":
-    print("=" * 50)
-    print("커맨드라인 파라미터 검증 테스트")
-    print("=" * 50)
-    
-    results = []
-    results.append(test_boss_alertness_parameter())
-    results.append(test_cooldown_parameter())
-    results.append(test_both_parameters())
-    
-    print("\n" + "=" * 50)
-    if all(results):
-        print("✅ All parameter tests passed!")
-    else:
-        print("❌ Some tests failed!")
-        sys.exit(1)
+    Transition 2 (1분 경과):
+        _auto_increase_stress()
+        → State(stress_level=21, boss_alert_level=1, ...)
+
+    Transition 3 (cooldown 경과):
+        _auto_decrease_boss_alert()
+        → State(stress_level=21, boss_alert_level=0, ...)
+
+    Transition 4 (Boss Alert Level 5일 때 휴식):
+        take_break(stress_decrease=10)
+        → sleep(20)  // 20초 지연
+        → State(stress_level=11, boss_alert_level=5, ...)
+        // Boss Alert는 max 5 유지 (더 이상 증가 안 함)
+}
+
+workflow ResponseFormatValidation {
+    요구사항:
+        모든 응답은 정규표현식 파싱 가능해야 함
+
+    정규표현식:
+        break_summary_pattern: r"Break Summary:\s*(.+?)(?:\n|$)"
+        stress_level_pattern: r"Stress Level:\s*(\d{1,3})"
+        boss_alert_pattern: r"Boss Alert Level:\s*([0-5])"
+
+    검증 과정:
+        1. 응답 텍스트 생성
+        2. 각 정규표현식으로 매칭
+        3. 값 추출 및 범위 검증
+           - Stress Level: 0-100
+           - Boss Alert Level: 0-5
+        4. 파싱 실패 시 테스트 실패
+}
 ```
 
-#### 4.2 tests/test_state.py
-```python
-"""
-상태 관리 로직 검증 테스트
-"""
-import time
-import re
-from state.manager import StateManager
+---
 
+## 7. 테스트 전략
 
-def test_stress_increase():
-    """Stress Level 자동 증가 테스트"""
-    print("Testing stress auto-increase...")
-    
-    manager = StateManager()
-    initial_stress, _ = manager.get_state()
-    
-    # 61초 대기 (1분 + 버퍼)
-    print("Waiting 61 seconds...")
-    time.sleep(61)
-    
-    new_stress, _ = manager.get_state()
-    
-    if new_stress > initial_stress:
-        print(f"✅ Stress increased: {initial_stress} → {new_stress}")
-        return True
-    else:
-        print(f"❌ Stress did not increase: {initial_stress} → {new_stress}")
-        return False
+```dsl
+testing TestStrategy {
 
+    // 커맨드라인 파라미터 테스트 (필수)
+    parameters {
+        test_boss_alertness_parameter {
+            command: "python main.py --boss_alertness 100"
+            verify:
+                - 서버 시작 성공
+                - config.boss_alertness == 100
+            importance: "자동 실격 항목"
+        }
 
-def test_boss_alert_probability():
-    """Boss Alert 확률적 증가 테스트"""
-    print("Testing boss alert probability...")
-    
-    manager = StateManager()
-    increases = 0
-    trials = 100
-    
-    for _ in range(trials):
-        _, before_boss = manager.get_state()
-        manager.take_break(10)
-        _, after_boss = manager.get_state()
-        
-        if after_boss > before_boss:
-            increases += 1
-    
-    probability = (increases / trials) * 100
-    print(f"Boss alert increased in {increases}/{trials} trials ({probability:.1f}%)")
-    
-    # 대략적으로 설정된 확률 근처인지 확인
-    if 30 <= probability <= 70:  # 기본값 50% 근처
-        print("✅ Probability seems reasonable")
-        return True
-    else:
-        print("⚠️  Probability might be off")
-        return True  # Warning만 주고 통과
+        test_boss_alertness_cooldown_parameter {
+            command: "python main.py --boss_alertness_cooldown 10"
+            verify:
+                - 서버 시작 성공
+                - config.boss_alertness_cooldown == 10
+            importance: "자동 실격 항목"
+        }
 
+        test_both_parameters {
+            command: "python main.py --boss_alertness 80 --boss_alertness_cooldown 60"
+            verify:
+                - 서버 시작 성공
+                - config.boss_alertness == 80
+                - config.boss_alertness_cooldown == 60
+            importance: "자동 실격 항목"
+        }
 
-def test_stress_bounds():
-    """Stress Level 범위 테스트 (0-100)"""
-    print("Testing stress level bounds...")
-    
-    manager = StateManager()
-    
-    # 많이 감소시켜보기
-    for _ in range(20):
-        manager.take_break(100)
-    
-    stress, _ = manager.get_state()
-    
-    if 0 <= stress <= 100:
-        print(f"✅ Stress within bounds: {stress}")
-        return True
-    else:
-        print(f"❌ Stress out of bounds: {stress}")
-        return False
+        test_default_values {
+            command: "python main.py"
+            verify:
+                - 서버 시작 성공
+                - config.boss_alertness == 50
+                - config.boss_alertness_cooldown == 300
+        }
 
+        test_range_validation {
+            command: "python main.py --boss_alertness 150"
+            verify: "config.boss_alertness == 100 (클리핑)"
 
-def test_boss_alert_bounds():
-    """Boss Alert Level 범위 테스트 (0-5)"""
-    print("Testing boss alert level bounds...")
-    
-    manager = StateManager()
-    
-    # 많이 증가시켜보기
-    for _ in range(50):
-        manager.take_break(10)
-    
-    _, boss_alert = manager.get_state()
-    
-    if 0 <= boss_alert <= 5:
-        print(f"✅ Boss alert within bounds: {boss_alert}")
-        return True
-    else:
-        print(f"❌ Boss alert out of bounds: {boss_alert}")
-        return False
+            command: "python main.py --boss_alertness -10"
+            verify: "config.boss_alertness == 0 (클리핑)"
+        }
+    }
 
+    // 상태 관리 테스트
+    state_management {
+        test_stress_auto_increase {
+            setup: "StateManager 생성"
+            action:
+                - 초기 stress_level 기록
+                - 61초 대기
+                - stress_level 조회
+            verify: "new_stress > initial_stress"
+        }
 
-if __name__ == "__main__":
-    print("=" * 50)
-    print("상태 관리 검증 테스트")
-    print("=" * 50)
-    
-    results = []
-    results.append(test_stress_bounds())
-    results.append(test_boss_alert_bounds())
-    results.append(test_boss_alert_probability())
-    # results.append(test_stress_increase())  # 시간이 오래 걸려서 선택적으로
-    
-    print("\n" + "=" * 50)
-    if all(results):
-        print("✅ All state tests passed!")
-    else:
-        print("❌ Some tests failed!")
+        test_boss_alert_probability {
+            setup: "config.boss_alertness = 50"
+            action:
+                - 100회 take_break() 호출
+                - boss_alert 증가 횟수 카운트
+            verify: "증가 확률이 40-60% 범위 (확률적)"
+        }
+
+        test_boss_alert_auto_decrease {
+            setup:
+                - StateManager 생성
+                - boss_alert_level = 3 설정
+            action:
+                - cooldown 시간 대기
+                - boss_alert_level 조회
+            verify: "boss_alert_level == 2"
+        }
+
+        test_stress_bounds {
+            action:
+                - take_break(100) 20회 호출
+                - stress_level 조회
+            verify: "0 <= stress_level <= 100"
+        }
+
+        test_boss_alert_bounds {
+            action:
+                - take_break(10) 50회 호출
+                - boss_alert_level 조회
+            verify: "0 <= boss_alert_level <= 5"
+        }
+
+        test_delay_mechanism {
+            setup: "boss_alert_level = 5 설정"
+            action:
+                - 시작 시간 기록
+                - take_break(10) 호출
+                - 종료 시간 기록
+            verify: "경과 시간 >= 20초"
+        }
+    }
+
+    // 도구 응답 형식 테스트
+    tool_responses {
+        test_response_format {
+            tools: [
+                TakeABreak,
+                WatchNetflix,
+                ShowMeme,
+                BathroomBreak,
+                CoffeeMission,
+                UrgentCall,
+                DeepThinking,
+                EmailOrganizing
+            ]
+
+            for each tool:
+                action: "tool.execute() 호출"
+                verify:
+                    - Break Summary 필드 존재
+                    - Stress Level 필드 존재 (0-100)
+                    - Boss Alert Level 필드 존재 (0-5)
+                    - 정규표현식 파싱 성공
+        }
+
+        test_regex_parsing {
+            patterns:
+                break_summary_pattern = r"Break Summary:\s*(.+?)(?:\n|$)"
+                stress_level_pattern = r"Stress Level:\s*(\d{1,3})"
+                boss_alert_pattern = r"Boss Alert Level:\s*([0-5])"
+
+            verify:
+                - 모든 패턴 매칭 성공
+                - 추출된 값 범위 정확
+        }
+    }
+
+    // 통합 테스트
+    integration {
+        test_full_workflow {
+            steps:
+                1. 서버 시작 (파라미터 포함)
+                2. 도구 호출 (8개 필수 도구)
+                3. 상태 변화 확인
+                4. 백그라운드 스레드 동작 확인
+                5. 응답 형식 검증
+
+            verify: "모든 필수 기능 정상 동작"
+        }
+    }
+
+    // 테스트 실행
+    execution {
+        commands:
+            pytest tests/test_params.py
+            pytest tests/test_state.py
+            pytest tests/test_tools.py
+            pytest  # 모든 테스트
+            python verify.py  # 통합 검증
+    }
+}
 ```
 
-#### 4.3 tests/test_tools.py
-```python
-"""
-도구 응답 형식 검증 테스트
-"""
-import re
-from tools.basic_tools import TakeABreak, WatchNetflix, ShowMeme
-from tools.advanced_tools import (
-    BathroomBreak, CoffeeMission, UrgentCall,
-    DeepThinking, EmailOrganizing
-)
+---
 
+## 8. 개발 가이드
 
-def validate_response_format(response):
-    """응답 형식 검증"""
-    text = response["content"][0]["text"]
-    
-    # 정규표현식 패턴
-    break_summary_pattern = r"Break Summary:\s*(.+?)(?:\n|$)"
-    stress_level_pattern = r"Stress Level:\s*(\d{1,3})"
-    boss_alert_pattern = r"Boss Alert Level:\s*([0-5])"
-    
-    # 각 필드 검증
-    break_match = re.search(break_summary_pattern, text, re.MULTILINE)
-    stress_match = re.search(stress_level_pattern, text)
-    boss_match = re.search(boss_alert_pattern, text)
-    
-    if not break_match:
-        return False, "Break Summary missing"
-    
-    if not stress_match:
-        return False, "Stress Level missing"
-    
-    if not boss_match:
-        return False, "Boss Alert Level missing"
-    
-    # 값 범위 검증
-    stress_val = int(stress_match.group(1))
-    boss_val = int(boss_match.group(1))
-    
-    if not (0 <= stress_val <= 100):
-        return False, f"Stress Level out of range: {stress_val}"
-    
-    if not (0 <= boss_val <= 5):
-        return False, f"Boss Alert Level out of range: {boss_val}"
-    
-    return True, "Valid response"
+```dsl
+development DevelopmentGuide {
 
+    // 개발 순서
+    phases {
+        phase1: "기반 구축 (2-3시간)" {
+            files: [
+                "config.py",
+                "state/manager.py",
+                "utils/response.py",
+                "tools/base.py",
+                "requirements.txt"
+            ]
 
-def test_tool_response(tool_class, tool_name):
-    """개별 도구 테스트"""
-    print(f"Testing {tool_name}...")
-    
-    tool = tool_class()
-    response = tool.execute()
-    
-    is_valid, message = validate_response_format(response)
-    
-    if is_valid:
-        print(f"  ✅ {message}")
-        return True
-    else:
-        print(f"  ❌ {message}")
-        return False
+            checklist: [
+                "커맨드라인 파라미터 동작 확인",
+                "State 불변 객체 구현",
+                "StateManager 스레드 동작 확인",
+                "응답 포맷 함수 테스트"
+            ]
+        }
 
+        phase2: "도구 구현 (1-2시간)" {
+            files: [
+                "tools/basic_tools.py",
+                "tools/advanced_tools.py",
+                "tools/optional_tools.py"
+            ]
 
-if __name__ == "__main__":
-    print("=" * 50)
-    print("도구 응답 형식 검증 테스트")
-    print("=" * 50)
-    
-    tools = [
-        (TakeABreak, "take_a_break"),
-        (WatchNetflix, "watch_netflix"),
-        (ShowMeme, "show_meme"),
-        (BathroomBreak, "bathroom_break"),
-        (CoffeeMission, "coffee_mission"),
-        (UrgentCall, "urgent_call"),
-        (DeepThinking, "deep_thinking"),
-        (EmailOrganizing, "email_organizing"),
+            checklist: [
+                "8개 필수 도구 구현",
+                "각 도구 응답 형식 검증",
+                "3개 선택 도구 구현 (보너스)"
+            ]
+        }
+
+        phase3: "통합 (30분)" {
+            files: [
+                "main.py"
+            ]
+
+            checklist: [
+                "모든 도구 등록",
+                "FastMCP 서버 시작 확인",
+                "stdio transport 동작 확인"
+            ]
+        }
+
+        phase4: "검증 (30분)" {
+            files: [
+                "tests/test_params.py",
+                "tests/test_state.py",
+                "tests/test_tools.py",
+                "verify.py"
+            ]
+
+            checklist: [
+                "모든 테스트 통과",
+                "통합 검증 성공"
+            ]
+        }
+    }
+
+    // 필수 준수 사항
+    requirements {
+        critical: [
+            "커맨드라인 파라미터 지원 (자동 실격)",
+            "8개 필수 도구 구현",
+            "응답 형식 정확히 준수",
+            "상태 범위 엄격히 유지 (0-100, 0-5)",
+            "백그라운드 스레드 구현"
+        ]
+
+        important: [
+            "함수형/명령형 스타일 가이드 준수",
+            "타입 힌트 명시",
+            "Thread-safe 구현",
+            "테스트 코드 작성"
+        ]
+
+        recommended: [
+            "3개 선택 도구 구현",
+            "Break Summary 창의적 작성",
+            "코드 주석 및 문서화"
+        ]
+    }
+
+    // 자주 하는 실수
+    common_mistakes {
+        critical_errors: [
+            "❌ 커맨드라인 파라미터 미지원 → 자동 실격",
+            "❌ 백그라운드 스레드 미구현 → 자동 증가/감소 안 됨",
+            "❌ 응답 형식 불일치 → 정규표현식 파싱 실패",
+            "❌ 범위 체크 안 함 → 음수, 초과값 발생"
+        ]
+
+        common_errors: [
+            "❌ State 객체를 직접 수정 (불변성 위반)",
+            "❌ Thread Lock 미사용 (동시성 문제)",
+            "❌ 리스트 사용 (튜플 사용해야 함)",
+            "❌ 전역 state 직접 변경"
+        ]
+    }
+
+    // 모듈별 책임
+    responsibilities {
+        config.py: "커맨드라인 파라미터 처리, 검증, 전역 설정"
+        state/manager.py: "상태 관리, 백그라운드 스레드, Thread-safe 업데이트"
+        utils/response.py: "MCP 응답 포맷팅 (순수 함수)"
+        tools/base.py: "도구 베이스 클래스, 공통 로직"
+        tools/*_tools.py: "개별 도구 구현 (함수형)"
+        main.py: "FastMCP 서버 설정, 도구 등록, 서버 실행"
+    }
+
+    // 평가 기준
+    evaluation {
+        functionality: "40%" {
+            criteria: [
+                "8개 필수 도구 정상 동작",
+                "MCP 서버 기본 동작",
+                "stdio transport 정상 통신"
+            ]
+        }
+
+        state_management: "30%" {
+            criteria: [
+                "Stress Level 로직 정확성",
+                "Boss Alert Level 로직 정확성",
+                "자동 증가/감소 메커니즘",
+                "지연 메커니즘"
+            ]
+        }
+
+        creativity: "20%" {
+            criteria: [
+                "Break Summary의 재치와 유머",
+                "도구별 독특한 메시지",
+                "사용자 경험"
+            ]
+        }
+
+        code_quality: "10%" {
+            criteria: [
+                "코드 구조 및 가독성",
+                "모듈화",
+                "주석 및 문서화",
+                "함수형 스타일 준수"
+            ]
+        }
+    }
+}
+```
+
+---
+
+## 9. 의존성
+
+```dsl
+dependencies {
+    python_version: "3.11"
+
+    required: [
+        "fastmcp>=0.1.0"
     ]
-    
-    results = []
-    for tool_class, tool_name in tools:
-        results.append(test_tool_response(tool_class, tool_name))
-    
-    print("\n" + "=" * 50)
-    if all(results):
-        print("✅ All tool tests passed!")
-    else:
-        print("❌ Some tests failed!")
-```
 
-#### 4.4 verify.py
-```python
-"""
-통합 검증 스크립트
-모든 테스트를 순차적으로 실행
-"""
-import sys
-import subprocess
-
-
-def run_test(test_file, test_name):
-    """테스트 파일 실행"""
-    print(f"\n{'=' * 60}")
-    print(f"Running {test_name}...")
-    print('=' * 60)
-    
-    result = subprocess.run(
-        [sys.executable, f"tests/{test_file}"],
-        capture_output=False
-    )
-    
-    return result.returncode == 0
-
-
-def main():
-    print("🚀 ChillMCP Server Verification")
-    print("=" * 60)
-    
-    tests = [
-        ("test_params.py", "커맨드라인 파라미터 테스트"),
-        ("test_state.py", "상태 관리 테스트"),
-        ("test_tools.py", "도구 응답 형식 테스트"),
+    standard_library: [
+        "argparse",
+        "threading",
+        "time",
+        "random",
+        "typing",
+        "dataclasses"
     ]
-    
-    results = []
-    for test_file, test_name in tests:
-        results.append(run_test(test_file, test_name))
-    
-    print("\n" + "=" * 60)
-    print("최종 결과")
-    print("=" * 60)
-    
-    for (_, test_name), result in zip(tests, results):
-        status = "✅ PASS" if result else "❌ FAIL"
-        print(f"{status}: {test_name}")
-    
-    print("=" * 60)
-    
-    if all(results):
-        print("🎉 모든 검증 통과!")
-        return 0
-    else:
-        print("❌ 일부 검증 실패")
-        return 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+}
 ```
 
 ---
 
-## 📦 requirements.txt
-```txt
-fastmcp>=0.1.0
+## 부록: 성공 기준
+
+```dsl
+success_criteria {
+
+    minimum_requirements: "Pass" {
+        checklist: [
+            "✅ 커맨드라인 파라미터 정상 동작",
+            "✅ 8개 필수 도구 모두 구현",
+            "✅ 상태 관리 로직 정확",
+            "✅ 응답 형식 준수",
+            "✅ 모든 필수 테스트 통과"
+        ]
+    }
+
+    excellence_requirements: "Excellent" {
+        checklist: [
+            "✅ 최소 기준 + 선택 도구 3개 구현",
+            "✅ Break Summary 창의적이고 유머러스",
+            "✅ 함수형 스타일 가이드 준수",
+            "✅ 코드 품질 우수",
+            "✅ 문서화 완벽"
+        ]
+    }
+}
 ```
-
----
-
-## 🚀 개발 진행 순서
-
-### Step 1: 당신이 먼저 구현 (필수)
-1. ✅ `config.py` - 커맨드라인 파라미터 처리
-2. ✅ `state/manager.py` - 상태 관리 시스템
-3. ✅ `utils/response.py` - 응답 포맷 헬퍼
-4. ✅ `tools/base.py` - 도구 베이스 클래스
-5. ✅ `requirements.txt` 작성
-
-### Step 2: 팀원과 병렬 작업
-**당신:**
-- ✅ `tools/basic_tools.py` - 기본 도구 3개
-- ✅ `tools/advanced_tools.py` - 고급 도구 5개
-
-**팀원:**
-- ✅ `tools/optional_tools.py` - 선택 도구 3개 (TODO 부분 구현)
-
-### Step 3: 통합 (공동 작업)
-- ✅ `main.py` - 모든 도구 통합 및 MCP 서버 완성
-
-### Step 4: 검증
-- ✅ `tests/` 폴더의 모든 테스트 실행
-- ✅ `python verify.py` 로 통합 검증
-
----
-
-## ⚠️ 주의사항
-
-### 협업 규칙
-1. **Step 1 완료 후** 팀원에게 공유
-2. **tools/base.py** 인터페이스 변경 시 반드시 협의
-3. **state/manager.py** 수정 시 양쪽 모두 영향받음 주의
-4. Git branch 전략:
-   - `main` - 안정 버전
-   - `feature/core` - 당신의 작업
-   - `feature/optional` - 팀원의 작업
-
-### 테스트 전 체크리스트
-- [ ] Python 3.11 환경 확인
-- [ ] `pip install -r requirements.txt` 실행
-- [ ] 모든 `__init__.py` 파일 생성 확인
-- [ ] `python verify.py` 실행하여 모든 테스트 통과
-- [ ] `python main.py --boss_alertness 100 --boss_alertness_cooldown 10` 실행 확인
-
----
-
-## 🎯 예상 작업 시간
-
-- **Step 1 (당신)**: 2-3시간
-- **Step 2 (병렬)**: 1-2시간
-- **Step 3 (통합)**: 30분
-- **Step 4 (검증)**: 30분
-
-**총 예상 시간**: 4-6시간
-
----
-
-## 📞 질문이 있을 때
-
-1. **상태 관리 관련**: `state/manager.py` 주석 참고
-2. **도구 구현 방법**: `tools/base.py` 예시 참고
-3. **응답 형식**: `utils/response.py` 사용
-4. **테스트 실패**: `tests/` 각 파일의 에러 메시지 확인
-
-Good luck! 🚀
