@@ -128,37 +128,46 @@ structure ProjectStructure {
     root: "chillmcp/"
 
     files: {
-        main.py: "FastMCP 서버 진입점"
-        config.py: "커맨드라인 파라미터 및 설정"
         requirements.txt: "의존성 (fastmcp>=0.1.0)"
+        README.md: "프로젝트 문서"
     }
 
     directories: {
-        state/: {
-            __init__.py
-            manager.py: "상태 관리 (State + StateManager)"
-        }
+        src/: {
+            __init__.py: "소스 패키지 루트"
+            main.py: "FastMCP 서버 진입점"
+            config.py: "커맨드라인 파라미터 및 설정"
 
-        tools/: {
-            __init__.py
-            base.py: "도구 베이스 클래스"
-            basic_tools.py: "기본 휴식 도구 3개"
-            advanced_tools.py: "고급 농땡이 기술 5개"
-            optional_tools.py: "선택 도구 3개"
-        }
+            state/: {
+                __init__.py
+                manager.py: "상태 관리 (State + StateManager)"
+            }
 
-        utils/: {
-            __init__.py
-            response.py: "MCP 응답 포맷 헬퍼"
+            tools/: {
+                __init__.py
+                base.py: "도구 베이스 클래스"
+                basic_tools.py: "기본 휴식 도구 3개"
+                advanced_tools.py: "고급 농땡이 기술 5개"
+                optional_tools.py: "선택 도구 3개"
+            }
+
+            utils/: {
+                __init__.py
+                response.py: "MCP 응답 포맷 헬퍼"
+            }
         }
 
         tests/: {
             test_params.py: "파라미터 검증"
             test_state.py: "상태 관리 검증"
             test_tools.py: "도구 응답 검증"
+            verify.py: "통합 검증 스크립트"
         }
 
-        verify.py: "통합 검증 스크립트"
+        docs/: {
+            DSL.md: "시스템 설계 명세서"
+            DEVELOP_GUIDE.md: "함수형 프로그래밍 가이드"
+        }
     }
 }
 ```
@@ -1068,10 +1077,21 @@ development DevelopmentGuide {
 
 ```dsl
 dependencies {
-    python_version: "3.11"
+    python_version: "3.12"
+    package_manager: "uv (권장)"
+
+    project_files: [
+        "pyproject.toml: 프로젝트 메타데이터 및 의존성",
+        "requirements.txt: 호환성을 위한 의존성 목록"
+    ]
 
     required: [
         "fastmcp>=0.1.0"
+    ]
+
+    dev: [
+        "pytest>=7.0.0",
+        "pytest-asyncio>=0.21.0"
     ]
 
     standard_library: [
@@ -1082,6 +1102,16 @@ dependencies {
         "typing",
         "dataclasses"
     ]
+
+    setup: {
+        install: "uv sync"
+        run: "uv run python -m src.main"
+        test: "uv run pytest"
+
+        // 선택: 수동 가상환경 활성화
+        manual_activate: "source .venv/bin/activate"
+        manual_run: "python -m src.main"
+    }
 }
 ```
 

@@ -17,7 +17,8 @@
 - **제출물**: 제한된 시간 내에 실행 가능한 데모(코드 + 설명)
 
 ### 기술 스택
-- **언어**: Python 3.11 (필수)
+- **언어**: Python 3.12+
+- **패키지 관리자**: uv (권장)
 - **프레임워크**: FastMCP
 - **통신**: stdio transport
 
@@ -35,8 +36,8 @@
 
 **테스트 명령어:**
 ```bash
-python main.py --boss_alertness 80 --boss_alertness_cooldown 60
-python main.py --boss_alertness 100 --boss_alertness_cooldown 10
+uv run python -m src.main --boss_alertness 80 --boss_alertness_cooldown 60
+uv run python -m src.main --boss_alertness 100 --boss_alertness_cooldown 10
 ```
 
 **동작 요구사항:**
@@ -185,36 +186,137 @@ boss_alert_pattern = r"Boss Alert Level:\s*([0-5])"
 ## 🚀 실행 방법
 
 ### 환경 설정
+
+#### uv 설치 (권장)
 ```bash
-# Python 3.11 가상환경 생성
-python -m venv venv
+# macOS/Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# 가상환경 활성화
-source venv/bin/activate  # macOS/Linux
-# venv\Scripts\activate   # Windows
+# Windows
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 
-# 의존성 설치
-pip install -r requirements.txt
+# Homebrew (macOS)
+brew install uv
 ```
 
-### 서버 실행
+#### 프로젝트 설정
 ```bash
-# 기본 실행
-python main.py
+# 가상환경 생성 및 의존성 설치
+uv sync
+```
+
+### MCP 서버 실행
+
+ChillMCP는 **stdio transport**를 사용하는 MCP 서버입니다. Claude Code와 연결하여 사용합니다.
+
+#### 1. Claude Code MCP 설정
+
+Claude Code의 MCP 설정 파일에 ChillMCP 서버를 등록합니다:
+
+**macOS/Linux**: `~/.config/claude/claude_desktop_config.json`
+**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "chillmcp": {
+      "command": "uv",
+      "args": [
+        "run",
+        "python",
+        "-m",
+        "src.main"
+      ],
+      "cwd": "/Users/your-username/path/to/ChilLee",
+      "env": {}
+    }
+  }
+}
+```
+
+**커스텀 파라미터 사용 시**:
+```json
+{
+  "mcpServers": {
+    "chillmcp": {
+      "command": "uv",
+      "args": [
+        "run",
+        "python",
+        "-m",
+        "src.main",
+        "--boss_alertness",
+        "80",
+        "--boss_alertness_cooldown",
+        "60"
+      ],
+      "cwd": "/Users/your-username/path/to/ChilLee"
+    }
+  }
+}
+```
+
+#### 2. Claude Code 재시작
+
+설정 파일 수정 후 Claude Code를 재시작하면 ChillMCP 서버가 자동으로 시작됩니다.
+
+#### 3. 서버 동작 확인
+
+Claude Code에서 다음과 같이 도구를 호출할 수 있습니다:
+```
+take_a_break
+watch_netflix
+bathroom_break
+...
+```
+
+#### 4. 직접 실행 (테스트용)
+
+개발/테스트 목적으로 서버를 직접 실행할 수도 있습니다:
+
+```bash
+# 기본 실행 (stdio transport)
+uv run python -m src.main
 
 # 커스텀 파라미터로 실행
-python main.py --boss_alertness 80 --boss_alertness_cooldown 60
+uv run python -m src.main --boss_alertness 80 --boss_alertness_cooldown 60
+
+# 파라미터 확인
+uv run python -m src.main --help
+```
+
+서버가 시작되면 다음과 같은 메시지가 표시됩니다:
+```
+🚀 ChillMCP Server Starting...
+⚙️  Boss Alertness: 50%
+⏰ Boss Alert Cooldown: 300s
+🔄 Background threads running...
+📡 Listening on stdio transport...
 ```
 
 ### 테스트 실행
 ```bash
 # 개별 테스트
-python tests/test_params.py
-python tests/test_state.py
-python tests/test_tools.py
+uv run pytest tests/test_params.py
+uv run pytest tests/test_state.py
+uv run pytest tests/test_tools.py
+
+# 모든 테스트 실행
+uv run pytest
 
 # 통합 검증
-python verify.py
+uv run python tests/verify.py
+```
+
+### 수동 가상환경 활성화 (선택)
+```bash
+# 가상환경을 수동으로 활성화하려면
+source .venv/bin/activate  # macOS/Linux
+# .venv\Scripts\activate   # Windows
+
+# 활성화 후에는 uv run 없이 실행 가능
+python -m src.main
+pytest
 ```
 
 ---
@@ -223,23 +325,34 @@ python verify.py
 
 ```
 chillmcp/
-├── main.py                      # MCP 서버 진입점
-├── config.py                    # 설정 및 파라미터 처리
-├── requirements.txt             # 의존성
-├── state/
-│   └── manager.py              # 상태 관리 (Stress, Boss Alert)
-├── tools/
-│   ├── base.py                 # 도구 베이스 클래스
-│   ├── basic_tools.py          # 기본 휴식 도구 3개
-│   ├── advanced_tools.py       # 고급 농땡이 기술 5개
-│   └── optional_tools.py       # 선택 도구 3개
-├── utils/
-│   └── response.py             # 응답 포맷 헬퍼
+├── src/                         # 소스 코드
+│   ├── __init__.py             # 패키지 루트
+│   ├── main.py                 # MCP 서버 진입점
+│   ├── config.py               # 설정 및 파라미터 처리
+│   ├── state/
+│   │   ├── __init__.py
+│   │   └── manager.py          # 상태 관리 (Stress, Boss Alert)
+│   ├── tools/
+│   │   ├── __init__.py
+│   │   ├── base.py             # 도구 베이스 클래스
+│   │   ├── basic_tools.py      # 기본 휴식 도구 3개
+│   │   ├── advanced_tools.py   # 고급 농땡이 기술 5개
+│   │   └── optional_tools.py   # 선택 도구 3개
+│   └── utils/
+│       ├── __init__.py
+│       └── response.py         # 응답 포맷 헬퍼
 ├── tests/
 │   ├── test_params.py          # 파라미터 검증
 │   ├── test_state.py           # 상태 관리 검증
-│   └── test_tools.py           # 도구 검증
-└── verify.py                   # 통합 검증 스크립트
+│   ├── test_tools.py           # 도구 검증
+│   └── verify.py               # 통합 검증 스크립트
+├── docs/
+│   ├── DSL.md                  # 시스템 설계 명세서
+│   └── DEVELOP_GUIDE.md        # 함수형 프로그래밍 가이드
+├── pyproject.toml              # 프로젝트 메타데이터 (uv)
+├── requirements.txt            # 의존성 (호환성)
+├── .gitignore
+└── README.md
 ```
 
 ---
@@ -247,7 +360,7 @@ chillmcp/
 ## ⚠️ 중요 주의사항
 
 ### 필수 준수 사항
-1. **Python 3.11** 환경에서 반드시 테스트
+1. **Python 3.12+** 환경에서 반드시 테스트
 2. **커맨드라인 파라미터** 미지원 시 자동 실격
 3. **응답 형식** 정확히 준수 (파싱 가능해야 함)
 4. **상태 범위** 엄격히 유지:
@@ -290,10 +403,11 @@ chillmcp/
 ## 📝 제출 전 최종 체크리스트
 
 ### 필수 확인 사항
-- [ ] Python 3.11 환경에서 테스트 완료
-- [ ] `python main.py` 정상 실행
-- [ ] `python main.py --boss_alertness 100 --boss_alertness_cooldown 10` 정상 실행
-- [ ] `python verify.py` 모든 테스트 통과
+- [ ] Python 3.12+ 환경에서 테스트 완료
+- [ ] `uv sync` 의존성 설치 완료
+- [ ] `uv run python -m src.main` 정상 실행
+- [ ] `uv run python -m src.main --boss_alertness 100 --boss_alertness_cooldown 10` 정상 실행
+- [ ] `uv run pytest` 모든 테스트 통과
 - [ ] 8개 필수 도구 모두 구현 및 동작
 - [ ] 응답 형식 정확히 준수
 - [ ] 상태 관리 로직 정확히 동작
